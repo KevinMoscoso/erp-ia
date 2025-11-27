@@ -1,0 +1,113 @@
+/* ============================
+   Debugbar: contenedor principal
+   ============================ */
+
+.debugbar {
+    position: fixed;
+    bottom: 0;
+    right: 0;
+    z-index: 10;
+    max-width: 90%;
+    max-height: 50%;
+    background-color: #ffffff;
+    border-top: 1px solid silver;
+    border-left: 1px solid silver;
+    -webkit-border-top-left-radius: 3px;
+    -moz-border-radius-topleft: 3px;
+    border-top-left-radius: 3px;
+    overflow: auto;
+}
+
+/* Ocultar la barra de depuración al imprimir */
+@media print {
+    .debugbar {
+        display: none;
+    }
+}
+
+/* ============================
+   Estructura de lista y elementos
+   ============================ */
+
+/* Lista horizontal sin viñetas ni espaciado por defecto */
+.debugbar ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+/* Elementos de la barra: inline y compactos */
+.debugbar-item {
+    display: inline-block;
+    padding: 5px;
+    margin: 0;
+}
+
+/* Control para minimizar/segmentar la barra */
+.debugbar-minimize {
+    padding-left: 10px;
+    padding-right: 10px;
+    border-right: 1px solid silver;
+    margin-right: 5px;
+}
+
+/* ============================
+   Enlaces, estados y badges
+   ============================ */
+
+/* Enlaces dentro de los items usan color primario */
+.debugbar-item a {
+    color: #007bff;
+    text-decoration: none;
+}
+
+/* Estado activo: mayor contraste y peso tipográfico */
+.debugbar-item a.active {
+    color: #000000;
+    font-weight: 700;
+}
+
+/* Pequeñas etiquetas informativas dentro de items */
+.debugbar-item span {
+    padding-left: 5px;
+    padding-right: 5px;
+    -webkit-border-radius: 5px;
+    -moz-border-radius: 5px;
+    border-radius: 5px;
+    background-color: #7B858C;
+    color: #ffffff;
+    display: inline-block;
+}
+
+/* ============================
+   Panel de detalles (oculto por defecto)
+   ============================ */
+
+.debugbar-section {
+    display: none;
+    padding: 10px;
+    border-top: 1px solid silver;
+    background-clip: padding-box;
+}
+
+/* Tabla interna para mostrar datos de depuración */
+.debugbar-section-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+/* Filas pares con fondo tenue para mejorar lectura */
+.debugbar-section-table tr:nth-child(even) {
+    background-color: #F1F1F1;
+}
+
+/* Resalte al pasar el cursor sobre la fila */
+.debugbar-section-table tr:hover {
+    background-color: #E9ECEF;
+}
+
+/* Espaciado lateral en celdas para consistencia visual */
+.debugbar-section-table td {
+    padding-left: 5px;
+    padding-right: 5px;
+}
