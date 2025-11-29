@@ -1,17 +1,17 @@
 <?php
 
-namespace FacturaScripts\Core\Base\AjaxForms;
+namespace ERPIA\Core\Base\AjaxForms;
 
-use FacturaScripts\Core\Base\DataBase\DataBaseWhere;
-use FacturaScripts\Core\DataSrc\Empresas;
-use FacturaScripts\Core\Lib\CodePatterns;
-use FacturaScripts\Core\Tools;
-use FacturaScripts\Core\Translator;
-use FacturaScripts\Dinamic\Model\Asiento;
-use FacturaScripts\Dinamic\Model\ConceptoPartida;
-use FacturaScripts\Dinamic\Model\Diario;
-use FacturaScripts\Dinamic\Model\FacturaCliente;
-use FacturaScripts\Dinamic\Model\FacturaProveedor;
+use ERPIA\Core\Base\DataBase\DataBaseWhere;
+use ERPIA\Core\DataSrc\Empresas;
+use ERPIA\Core\Lib\CodePatterns;
+use ERPIA\Core\Tools;
+use ERPIA\Core\Translator;
+use ERPIA\Dinamic\Model\Asiento;
+use ERPIA\Dinamic\Model\ConceptoPartida;
+use ERPIA\Dinamic\Model\Diario;
+use ERPIA\Dinamic\Model\FacturaCliente;
+use ERPIA\Dinamic\Model\FacturaProveedor;
 
 /**
  * Description of AccountingHeaderHTML

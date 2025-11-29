@@ -1,12 +1,12 @@
 <?php
 
-namespace FacturaScripts\Core\Base\AjaxForms;
+namespace ERPIA\Core\Base\AjaxForms;
 
-use FacturaScripts\Core\Base\DataBase\DataBaseWhere;
-use FacturaScripts\Core\Tools;
-use FacturaScripts\Core\Translator;
-use FacturaScripts\Dinamic\Model\Asiento;
-use FacturaScripts\Dinamic\Model\Subcuenta;
+use ERPIA\Core\Base\DataBase\DataBaseWhere;
+use ERPIA\Core\Tools;
+use ERPIA\Core\Translator;
+use ERPIA\Dinamic\Model\Asiento;
+use ERPIA\Dinamic\Model\Subcuenta;
 
 /**
  * Description of AccountingModalHTML

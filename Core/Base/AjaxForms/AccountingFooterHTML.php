@@ -1,9 +1,9 @@
 <?php
 
-namespace FacturaScripts\Core\Base\AjaxForms;
+namespace ERPIA\Core\Base\AjaxForms;
 
-use FacturaScripts\Core\Translator;
-use FacturaScripts\Dinamic\Model\Asiento;
+use ERPIA\Core\Translator;
+use ERPIA\Dinamic\Model\Asiento;
 
 /**
  * Description of AccountingFooterHTML
