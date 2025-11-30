@@ -1,6 +1,6 @@
 <?php
 
-namespace ERPIA\Core\Base\FormulariosAjax;
+namespace ERPIA\Core\Base\AjaxForms;
 
 use ERPIA\Core\Base\Calculador;
 use ERPIA\Core\Base\BaseDeDatos\DondeBaseDeDatos;

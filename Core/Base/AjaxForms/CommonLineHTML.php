@@ -4,7 +4,7 @@
  * Desarrollado para gestión de documentos comerciales
  */
 
-namespace ERPIA\Core\Base\FormulariosAjax;
+namespace ERPIA\Core\Base\AjaxForms;
 
 use ERPIA\Core\Base\Traductor;
 use ERPIA\Core\Base\BaseDeDatos\DondeBaseDeDatos;
