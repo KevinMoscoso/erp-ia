@@ -2,151 +2,156 @@
 
 namespace ERPIA\Lib\Export;
 
-use ERPIA\Core\DataBase\DataBaseWhere;
+use ERPIA\Core\DatabaseWhere;
 use ERPIA\Models\Base\BusinessDocument;
 use ERPIA\Models\Base\ModelClass;
-use ERPIA\Core\Response;
-use ERPIA\Core\I18n;
+use ERPIA\Core\HttpResponse;
 use ERPIA\Core\NumberFormatter;
-use ERPIA\Lib\PDF\PDFDocument;
+use ERPIA\Core\Internationalization;
+use ERPIA\Models\FormatoDocumento;
 
 /**
- * PDF export data.
+ * PDF export implementation for ERPIA
  */
 class PDFExport extends PDFDocument
 {
-    const EXPORT_BATCH_SIZE = 500;
+    const BATCH_LIMIT = 500;
+    
+    /** @var object|null */
+    protected $documentFormat = null;
+    
+    /** @var object|null */
+    protected $pdfGenerator = null;
     
     /**
-     * Adds a new page with the document data.
+     * Export a business document to PDF
      */
-    public function addBusinessDocumentPage($model): bool
+    public function exportBusinessDocument(BusinessDocument $model): bool
     {
         if ($this->documentFormat === null) {
-            $this->documentFormat = $this->getDocumentFormatSettings($model);
+            $this->documentFormat = $this->getDocumentFormatting($model);
         }
         
-        // New page
-        if ($this->pdfEngine === null) {
-            $this->startNewPage();
+        if ($this->pdfGenerator === null) {
+            $this->createNewPage();
         } else {
-            $this->pdfEngine->addNewPage();
+            $this->pdfGenerator->startNewPage();
             $this->headerInserted = false;
         }
         
-        $this->addPageHeader($model->company_id ?? null);
-        $this->addDocumentHeader($model);
-        $this->addDocumentBody($model);
-        $this->addDocumentFooter($model);
+        $this->insertPageHeader($model->companyId);
+        $this->insertBusinessDocumentHeader($model);
+        $this->insertBusinessDocumentBody($model);
+        $this->insertBusinessDocumentFooter($model);
         
-        // Add draft warning for editable invoices
-        $invoiceTypes = ['CustomerInvoice', 'SupplierInvoice'];
-        if (in_array($model->modelClassName(), $invoiceTypes) && $model->isEditable()) {
-            $this->pdfEngine->setTextColor(200, 0, 0);
-            $this->pdfEngine->addText(0, 230, 15, 
-                I18n::trans('draft-invoice-warning'), 600, 'center', -35);
-            $this->pdfEngine->setTextColor(0, 0, 0);
+        $editableInvoiceTypes = ['CustomerInvoice', 'SupplierInvoice'];
+        if (in_array($model->getModelClassName(), $editableInvoiceTypes) && $model->isEditable()) {
+            $this->pdfGenerator->setColor(200, 0, 0);
+            $this->pdfGenerator->addText(0, 230, 15, 
+                Internationalization::translate('draft-invoice-warning'), 
+                600, 'center', -35);
+            $this->pdfGenerator->setColor(0, 0, 0);
         }
         
         return false;
     }
     
     /**
-     * Adds a new page with a table listing the model's data.
+     * Export a list of models to PDF with pagination
      */
-    public function addModelListPage($model, $where, $order, $offset, $columns, $title = ''): bool
+    public function exportModelList(ModelClass $model, array $conditions, array $orderBy, 
+                                  int $startOffset, array $columns, string $title = ''): bool
     {
-        $this->setOutputFileName($title);
+        $this->setOutputFilename($title);
         
         $pageOrientation = 'portrait';
         $tableColumns = [];
-        $columnTitles = [];
+        $columnHeaders = [];
         $tableConfig = [
             'cols' => [], 
             'shadeCol' => [0.95, 0.95, 0.95], 
             'shadeHeadingCol' => [0.95, 0.95, 0.95]
         ];
         $tableData = [];
-        $longTitleList = [];
+        $shortenedTitles = [];
         
-        // Convert widget columns to needed arrays
-        $this->prepareTableColumns($columns, $tableColumns, $columnTitles, $tableConfig);
+        $this->configureTableColumns($columns, $tableColumns, $columnHeaders, $tableConfig);
+        
         if (count($tableColumns) > 5) {
             $pageOrientation = 'landscape';
-            $this->truncateLongTitles($longTitleList, $columnTitles);
+            $this->shortenColumnTitles($shortenedTitles, $columnHeaders);
         }
         
-        $this->startNewPage($pageOrientation);
-        $tableConfig['width'] = $this->tableMaxWidth;
-        $this->addPageHeader();
+        $this->createNewPage($pageOrientation);
+        $tableConfig['width'] = $this->tableWidth;
+        $this->insertPageHeader();
         
-        $records = $model->getAll($where, $order, $offset, self::EXPORT_BATCH_SIZE);
+        $records = $model->getAll($conditions, $orderBy, $startOffset, self::BATCH_LIMIT);
+        
         if (empty($records)) {
-            $this->pdfEngine->createTable($tableData, $columnTitles, '', $tableConfig);
+            $this->pdfGenerator->createTable($tableData, $columnHeaders, '', $tableConfig);
         }
         
         while (!empty($records)) {
-            $tableData = $this->prepareTableRows($records, $tableColumns, $tableConfig);
-            $this->filterEmptyColumns($tableData, $columnTitles, NumberFormatter::format(0));
-            $this->pdfEngine->createTable($tableData, $columnTitles, $title, $tableConfig);
+            $tableData = $this->prepareTableData($records, $tableColumns, $tableConfig);
+            $this->filterEmptyColumns($tableData, $columnHeaders, NumberFormatter::formatNumber(0));
+            $this->pdfGenerator->createTable($tableData, $columnHeaders, $title, $tableConfig);
             
-            // Advance within the results
-            $offset += self::EXPORT_BATCH_SIZE;
-            $records = $model->getAll($where, $order, $offset, self::EXPORT_BATCH_SIZE);
+            $startOffset += self::BATCH_LIMIT;
+            $records = $model->getAll($conditions, $orderBy, $startOffset, self::BATCH_LIMIT);
         }
         
-        $this->restoreLongTitles($longTitleList, $columnTitles);
-        $this->addPageFooter();
+        $this->restoreColumnTitles($shortenedTitles, $columnHeaders);
+        $this->insertPageFooter();
         return true;
     }
     
     /**
-     * Adds a new page with the model data.
+     * Export a single model to PDF
      */
-    public function addModelPage($model, $columns, $title = ''): bool
+    public function exportSingleModel(ModelClass $model, array $columns, string $title = ''): bool
     {
-        $this->startNewPage();
-        $companyId = $model->company_id ?? null;
-        $this->addPageHeader($companyId);
+        $this->createNewPage();
+        $companyId = $model->companyId ?? null;
+        $this->insertPageHeader($companyId);
         
         $tableColumns = [];
-        $columnTitles = [];
+        $columnHeaders = [];
         $tableConfig = [
-            'width' => $this->tableMaxWidth,
+            'width' => $this->tableWidth,
             'showHeadings' => 0,
             'shaded' => 0,
             'lineCol' => [1, 1, 1],
             'cols' => []
         ];
         
-        // Get the columns
-        $this->prepareTableColumns($columns, $tableColumns, $columnTitles, $tableConfig);
+        $this->configureTableColumns($columns, $tableColumns, $columnHeaders, $tableConfig);
         
-        $modelData = [];
-        foreach ($columnTitles as $key => $colTitle) {
+        $tableRows = [];
+        foreach ($columnHeaders as $key => $header) {
             $value = $tableConfig['cols'][$key]['widget']->getPlainText($model);
-            $modelData[] = ['field' => $colTitle, 'content' => $this->sanitizeValue($value)];
+            $tableRows[] = ['key' => $header, 'value' => $this->sanitizeCellValue($value)];
         }
         
         $title .= ': ' . $model->getPrimaryDescription();
-        $this->pdfEngine->addText("\n" . $this->sanitizeValue($title) . "\n", self::TITLE_FONT_SIZE);
-        $this->addEmptyLine();
+        $this->pdfGenerator->addText("\n" . $this->sanitizeCellValue($title) . "\n", self::FONT_SIZE + 6);
+        $this->addLineBreak();
         
-        $this->createTwoColumnTable($modelData, '', $tableConfig);
-        $this->addPageFooter();
+        $this->insertTwoColumnTable($tableRows, '', $tableConfig);
+        $this->insertPageFooter();
         return true;
     }
     
     /**
-     * Adds a new page with a table.
+     * Export a generic table to PDF
      */
-    public function addTablePage($headers, $rows, $options = [], $title = ''): bool
+    public function exportTable(array $headers, array $rows, array $options = [], string $title = ''): bool
     {
         $pageOrientation = count($headers) > 5 ? 'landscape' : 'portrait';
-        $this->startNewPage($pageOrientation);
+        $this->createNewPage($pageOrientation);
         
         $tableConfig = [
-            'width' => $this->tableMaxWidth,
+            'width' => $this->tableWidth,
             'shadeCol' => [0.95, 0.95, 0.95],
             'shadeHeadingCol' => [0.95, 0.95, 0.95],
             'cols' => []
@@ -158,102 +163,115 @@ class PDFExport extends PDFDocument
                 continue;
             }
             
-            $numericFields = ['debit', 'credit', 'balance', 'previous_balance', 'total'];
-            if (in_array($key, $numericFields)) {
+            $rightAlignColumns = ['debit', 'credit', 'balance', 'previous_balance', 'total'];
+            if (in_array($key, $rightAlignColumns)) {
                 $tableConfig['cols'][$key]['justification'] = 'right';
             }
         }
         
-        $this->addPageHeader();
-        $this->pdfEngine->createTable($rows, $headers, $title, $tableConfig);
-        $this->addPageFooter();
+        $this->insertPageHeader();
+        $this->pdfGenerator->createTable($rows, $headers, $title, $tableConfig);
+        $this->insertPageFooter();
         return true;
     }
     
     /**
-     * Returns the full document.
+     * Get the complete PDF document content
      */
-    public function getDocument()
+    public function getDocumentContent()
     {
-        if ($this->pdfEngine === null) {
-            $this->startNewPage();
-            $this->pdfEngine->addText('');
+        if ($this->pdfGenerator === null) {
+            $this->createNewPage();
+            $this->pdfGenerator->addText('');
         }
         
-        return $this->pdfEngine->generateOutput();
+        return $this->pdfGenerator->generateOutput();
     }
     
     /**
-     * Initializes a new document.
+     * Initialize a new PDF document
      */
-    public function newDocument(string $title, int $formatId, string $languageCode)
+    public function initializeDocument(string $title, int $formatId, string $languageCode): void
     {
-        $this->setOutputFileName($title);
+        $this->setOutputFilename($title);
         
         if (!empty($formatId)) {
-            $this->documentFormat = new DocumentFormat();
+            $this->documentFormat = new FormatoDocumento();
             $this->documentFormat->loadById($formatId);
         }
         
         if (!empty($languageCode)) {
-            I18n::setLanguage($languageCode);
+            Internationalization::setLanguage($languageCode);
         }
     }
     
     /**
-     * Sets the company for the document.
+     * Set company for document header
      */
-    public function setCompany(int $companyId): void
+    public function setDocumentCompany(int $companyId): void
     {
-        // New page
-        if ($this->pdfEngine === null) {
-            $this->startNewPage();
+        if ($this->pdfGenerator === null) {
+            $this->createNewPage();
         }
         
-        $this->addPageHeader($companyId);
+        $this->insertPageHeader($companyId);
     }
     
     /**
-     * Sets headers and outputs document content to response.
+     * Send PDF document to HTTP response
      */
-    public function show(Response &$response)
+    public function sendToResponse(HttpResponse &$response): void
     {
         $response->setHeader('Content-Type', 'application/pdf');
-        $response->setHeader('Content-Disposition', 'inline; filename=' . $this->getOutputFileName() . '.pdf');
-        $response->setContent($this->getDocument());
+        $response->setHeader('Content-Disposition', 'inline; filename=' . $this->getOutputFilename() . '.pdf');
+        $response->setContent($this->getDocumentContent());
     }
     
     /**
-     * Prepares table columns from widget columns.
+     * Configure table columns from widget definitions
      */
-    protected function prepareTableColumns(array $columns, array &$tableCols, array &$colTitles, array &$tableOptions): void
+    protected function configureTableColumns(array $columns, array &$tableCols, 
+                                           array &$colHeaders, array &$tableConfig): void
     {
-        $widgetMap = $this->getColumnWidgetMap($columns);
-        
-        foreach ($widgetMap as $key => $widget) {
-            $tableCols[$key] = $key;
-            $colTitles[$key] = $this->getColumnTitleMap($columns)[$key] ?? $key;
-            $tableOptions['cols'][$key] = [
-                'widget' => $widget,
-                'justification' => $this->getColumnAlignmentMap($columns)[$key] ?? 'left'
-            ];
+        foreach ($columns as $column) {
+            if (is_string($column)) {
+                continue;
+            }
+            
+            if (isset($column->columns)) {
+                $this->configureTableColumns($column->columns, $tableCols, $colHeaders, $tableConfig);
+                continue;
+            }
+            
+            if (!$column->isHidden()) {
+                $fieldName = $column->widget->fieldName;
+                $tableCols[] = $fieldName;
+                $colHeaders[$fieldName] = Internationalization::translate($column->title);
+                
+                if (isset($column->display)) {
+                    $tableConfig['cols'][$fieldName]['justification'] = $column->display;
+                }
+                
+                $tableConfig['cols'][$fieldName]['widget'] = $column->widget;
+            }
         }
     }
     
     /**
-     * Prepares table rows from cursor data.
+     * Prepare table data from model records
      */
-    protected function prepareTableRows(array $cursor, array $columns, array $options): array
+    protected function prepareTableData(array $records, array $columns, array $config): array
     {
         $tableData = [];
         
-        foreach ($cursor as $index => $row) {
-            foreach ($columns as $key) {
-                $widget = $options['cols'][$key]['widget'] ?? null;
-                if ($widget && method_exists($widget, 'getPlainText')) {
-                    $tableData[$index][$key] = $this->sanitizeValue($widget->getPlainText($row));
+        foreach ($records as $index => $record) {
+            foreach ($columns as $column) {
+                if (isset($config['cols'][$column]['widget'])) {
+                    $widget = $config['cols'][$column]['widget'];
+                    $value = $widget->getPlainText($record);
+                    $tableData[$index][$column] = $this->sanitizeCellValue($value);
                 } else {
-                    $tableData[$index][$key] = $this->sanitizeValue($row->{$key} ?? '');
+                    $tableData[$index][$column] = $record->{$column} ?? '';
                 }
             }
         }
@@ -262,31 +280,56 @@ class PDFExport extends PDFDocument
     }
     
     /**
-     * Removes empty columns from table data.
+     * Shorten column titles for better display
      */
-    protected function filterEmptyColumns(array &$data, array &$titles, $emptyValue): void
+    protected function shortenColumnTitles(array &$shortened, array &$titles): void
+    {
+        foreach ($titles as $key => $title) {
+            if (strlen($title) > 15) {
+                $shortened[$key] = $title;
+                $titles[$key] = substr($title, 0, 15) . '...';
+            }
+        }
+    }
+    
+    /**
+     * Restore original column titles
+     */
+    protected function restoreColumnTitles(array $shortened, array &$titles): void
+    {
+        foreach ($shortened as $key => $original) {
+            if (isset($titles[$key])) {
+                $titles[$key] = $original;
+            }
+        }
+    }
+    
+    /**
+     * Filter out empty columns from table data
+     */
+    protected function filterEmptyColumns(array &$data, array &$headers, string $zeroValue): void
     {
         if (empty($data)) {
             return;
         }
         
-        $keysToRemove = [];
-        foreach (array_keys($titles) as $key) {
-            $allEmpty = true;
+        $columnsToRemove = [];
+        foreach ($headers as $key => $header) {
+            $isEmpty = true;
             foreach ($data as $row) {
-                if (isset($row[$key]) && $row[$key] !== $emptyValue && $row[$key] !== '') {
-                    $allEmpty = false;
+                if (isset($row[$key]) && $row[$key] !== $zeroValue && $row[$key] !== '') {
+                    $isEmpty = false;
                     break;
                 }
             }
             
-            if ($allEmpty) {
-                $keysToRemove[] = $key;
+            if ($isEmpty) {
+                $columnsToRemove[] = $key;
             }
         }
         
-        foreach ($keysToRemove as $key) {
-            unset($titles[$key]);
+        foreach ($columnsToRemove as $key) {
+            unset($headers[$key]);
             foreach ($data as &$row) {
                 unset($row[$key]);
             }
@@ -294,102 +337,10 @@ class PDFExport extends PDFDocument
     }
     
     /**
-     * Truncates long titles for landscape mode.
+     * Sanitize cell value for PDF output
      */
-    protected function truncateLongTitles(array &$longTitles, array &$titles): void
+    protected function sanitizeCellValue(string $value): string
     {
-        foreach ($titles as $key => $title) {
-            if (strlen($title) > 15) {
-                $longTitles[$key] = $title;
-                $titles[$key] = substr($title, 0, 12) . '...';
-            }
-        }
-    }
-    
-    /**
-     * Restores long titles after table.
-     */
-    protected function restoreLongTitles(array $longTitles, array &$titles): void
-    {
-        if (empty($longTitles)) {
-            return;
-        }
-        
-        $this->addEmptyLine();
-        $this->pdfEngine->addText(I18n::trans('legend') . ':', self::NORMAL_FONT_SIZE);
-        
-        foreach ($longTitles as $key => $title) {
-            $titles[$key] = $title;
-            $this->pdfEngine->addText('  ' . $key . ': ' . $title, self::SMALL_FONT_SIZE);
-        }
-    }
-    
-    /**
-     * Sanitizes a value for PDF output.
-     */
-    protected function sanitizeValue($value): string
-    {
-        if (is_null($value)) {
-            return '';
-        }
-        
-        $stringValue = (string)$value;
-        // Remove any characters that might cause issues in PDF
-        $stringValue = str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $stringValue);
-        return $stringValue;
-    }
-    
-    /**
-     * Creates a two-column table for model data.
-     */
-    protected function createTwoColumnTable(array $data, string $title, array $options): void
-    {
-        $halfPoint = ceil(count($data) / 2);
-        $leftColumn = array_slice($data, 0, $halfPoint);
-        $rightColumn = array_slice($data, $halfPoint);
-        
-        $tableConfig = [
-            'width' => $this->tableMaxWidth,
-            'showHeadings' => 0,
-            'shaded' => 0,
-            'lineCol' => [0.8, 0.8, 0.8],
-            'cols' => [
-                'field' => ['justification' => 'right', 'width' => 200],
-                'content' => ['justification' => 'left', 'width' => 200]
-            ]
-        ];
-        
-        $combinedData = [];
-        $maxRows = max(count($leftColumn), count($rightColumn));
-        
-        for ($i = 0; $i < $maxRows; $i++) {
-            $row = [];
-            if (isset($leftColumn[$i])) {
-                $row['left_field'] = $leftColumn[$i]['field'];
-                $row['left_content'] = $leftColumn[$i]['content'];
-            }
-            if (isset($rightColumn[$i])) {
-                $row['right_field'] = $rightColumn[$i]['field'];
-                $row['right_content'] = $rightColumn[$i]['content'];
-            }
-            $combinedData[] = $row;
-        }
-        
-        $combinedHeaders = [
-            'left_field' => '',
-            'left_content' => '',
-            'right_field' => '',
-            'right_content' => ''
-        ];
-        
-        $this->pdfEngine->createTable($combinedData, $combinedHeaders, $title, $tableConfig);
-    }
-    
-    /**
-     * Adds an empty line to the PDF.
-     */
-    protected function addEmptyLine(): void
-    {
-        $this->pdfEngine->addText("\n");
+        return htmlspecialchars_decode($value, ENT_QUOTES);
     }
 }

@@ -2,104 +2,101 @@
 
 namespace ERPIA\Lib\Export;
 
-use ERPIA\Core\DataBase\DataBaseWhere;
+use ERPIA\Core\DatabaseWhere;
 use ERPIA\Models\Base\BusinessDocument;
 use ERPIA\Models\Base\ModelClass;
-use ERPIA\Core\Response;
+use ERPIA\Core\HttpResponse;
 
 /**
- * Exports data to CSV format
+ * CSV exporter for ERPIA system
  */
 class CSVExport extends ExportBase
 {
     const BATCH_SIZE = 1000;
     
     /** @var array */
-    protected $csvData = [];
+    private $csvData = [];
     
     /** @var string */
-    protected $textDelimiter = '"';
+    private $textDelimiter = '"';
     
     /** @var string */
-    protected $fieldSeparator = ';';
+    private $fieldSeparator = ';';
     
     /**
-     * Adds business document data, merging header and line data
+     * Export a business document with combined header and lines
      */
-    public function addBusinessDocumentPage($model): bool
+    public function exportBusinessDocument(BusinessDocument $document): bool
     {
-        $headerData = $this->extractModelData([$model]);
-        $documentLines = $model->getLines();
+        $documentData = [];
+        $properties = [];
         
-        $fields = [];
-        $rows = [];
-        
-        foreach ($documentLines as $line) {
-            if (empty($fields)) {
-                $modelFields = $this->getModelFields($model);
-                $lineFields = $this->getModelFields($line);
-                $fields = array_merge($lineFields, $modelFields);
+        $headerData = $this->extractModelData([$document]);
+        foreach ($document->getLines() as $line) {
+            if (empty($properties)) {
+                $headerProps = $this->getModelProperties($document);
+                $lineProps = $this->getModelProperties($line);
+                $properties = array_merge($lineProps, $headerProps);
             }
             
             $lineData = $this->extractModelData([$line]);
-            $rows[] = array_merge($lineData[0], $headerData[0]);
+            $documentData[] = array_merge($lineData[0], $headerData[0]);
         }
         
-        $this->writeData($rows, $fields);
+        $this->writeCSVData($documentData, $properties);
         
         return false;
     }
     
     /**
-     * Adds a page with a list of models
+     * Export a list of models with pagination
      */
-    public function addModelListPage($model, $where, $order, $offset, $columns, $title = ''): bool
+    public function exportModelList(ModelClass $model, array $conditions, array $orderBy, int $startOffset, array $columns, string $title = ''): bool
     {
-        $this->setFileName($title);
+        $this->setOutputFilename($title);
         
-        $fields = $this->getModelFields($model);
-        $records = $model->getAll($where, $order, $offset, self::BATCH_SIZE);
+        $properties = $this->getModelProperties($model);
+        $records = $model->getAll($conditions, $orderBy, $startOffset, self::BATCH_SIZE);
         
         if (empty($records)) {
-            $this->writeData([], $fields);
-            return false;
+            $this->writeCSVData([], $properties);
         }
         
         while (!empty($records)) {
             $data = $this->extractModelData($records);
-            $this->writeData($data, $fields);
-            $fields = [];
+            $this->writeCSVData($data, $properties);
+            $properties = [];
             
-            $offset += self::BATCH_SIZE;
-            $records = $model->getAll($where, $order, $offset, self::BATCH_SIZE);
+            $startOffset += self::BATCH_SIZE;
+            $records = $model->getAll($conditions, $orderBy, $startOffset, self::BATCH_SIZE);
         }
         
         return false;
     }
     
     /**
-     * Adds a page with a single model
+     * Export a single model instance
      */
-    public function addModelPage($model, $columns, $title = ''): bool
+    public function exportSingleModel(ModelClass $model, array $columns, string $title = ''): bool
     {
-        $fields = $this->getModelFields($model);
+        $properties = $this->getModelProperties($model);
         $data = $this->extractModelData([$model]);
-        $this->writeData($data, $fields);
+        $this->writeCSVData($data, $properties);
         
         return false;
     }
     
     /**
-     * Adds a page with a table
+     * Export a generic table
      */
-    public function addTablePage($headers, $rows, $options = [], $title = ''): bool
+    public function exportTable(array $headers, array $rows, array $options = [], string $title = ''): bool
     {
-        $this->writeData($rows, $headers);
+        $this->writeCSVData($rows, $headers);
         return false;
     }
     
     /**
-     * Gets the current text delimiter
+     * Get the current text delimiter
      */
     public function getTextDelimiter(): string
     {
@@ -107,15 +104,15 @@ class CSVExport extends ExportBase
     }
     
     /**
-     * Gets the complete CSV document
+     * Get the complete CSV document content
      */
-    public function getDocument(): string
+    public function getDocumentContent(): string
     {
         return implode(PHP_EOL, $this->csvData);
     }
     
     /**
-     * Gets the current field separator
+     * Get the current field separator
      */
     public function getFieldSeparator(): string
     {
@@ -123,130 +120,91 @@ class CSVExport extends ExportBase
     }
     
     /**
-     * Initializes a new CSV document
+     * Initialize a new CSV document
      */
-    public function newDocument(string $title, int $formatId, string $languageCode)
+    public function initializeDocument(string $title, int $formatId, string $languageCode): void
     {
         $this->csvData = [];
-        $this->setFileName($title);
+        $this->setOutputFilename($title);
     }
     
     /**
-     * Sets the text delimiter
+     * Set the text delimiter character
      */
-    public function setTextDelimiter(string $delimiter)
+    public function setTextDelimiter(string $delimiter): void
     {
         $this->textDelimiter = $delimiter;
     }
     
     /**
-     * Sets the orientation (not applicable for CSV, kept for compatibility)
+     * Set page orientation (not applicable for CSV)
      */
-    public function setOrientation(string $orientation)
+    public function setPageOrientation(string $orientation): void
     {
-        // Not applicable for CSV
+        // Not implemented for CSV export
     }
     
     /**
-     * Sets the field separator
+     * Set the field separator character
      */
-    public function setFieldSeparator(string $separator)
+    public function setFieldSeparator(string $separator): void
     {
         $this->fieldSeparator = $separator;
     }
     
     /**
-     * Sends the CSV document to the response
+     * Send the CSV document to HTTP response
      */
-    public function show(Response &$response)
+    public function sendToResponse(HttpResponse &$response): void
     {
         $response->setHeader('Content-Type', 'text/csv; charset=utf-8');
-        $response->setHeader('Content-Disposition', 'attachment; filename=' . $this->getFileName() . '.csv');
-        $response->setContent($this->getDocument());
+        $response->setHeader('Content-Disposition', 'attachment; filename=' . $this->getFilename() . '.csv');
+        $response->setContent($this->getDocumentContent());
     }
     
     /**
-     * Writes data to the CSV
+     * Write data rows to CSV format
      */
-    public function writeData(array $data, array $fields = [])
+    public function writeCSVData(array $data, array $properties = []): void
     {
-        if (!empty($fields)) {
-            $this->writeHeader($fields);
+        if (!empty($properties)) {
+            $this->writeCSVHeaders($properties);
         }
         
         foreach ($data as $row) {
             $csvRow = [];
             foreach ($row as $cell) {
-                $csvRow[] = $this->formatCell($cell);
+                $csvRow[] = $this->formatCSVCell($cell);
             }
+            
             $this->csvData[] = implode($this->fieldSeparator, $csvRow);
         }
     }
     
     /**
-     * Writes the header row
+     * Format a single cell for CSV output
      */
-    private function writeHeader(array $fields)
+    private function formatCSVCell($value): string
     {
-        $headerRow = [];
-        foreach ($fields as $field) {
-            $headerRow[] = $this->textDelimiter . $field . $this->textDelimiter;
+        if (is_string($value)) {
+            $delimiter = $this->textDelimiter;
+            $escapedValue = str_replace($delimiter, $delimiter . $delimiter, $value);
+            return $delimiter . $escapedValue . $delimiter;
         }
-        $this->csvData[] = implode($this->fieldSeparator, $headerRow);
+        
+        return (string)$value;
     }
     
     /**
-     * Formats a cell for CSV output
+     * Write CSV headers from property names
      */
-    private function formatCell($cell): string
+    private function writeCSVHeaders(array $properties): void
     {
-        if (!is_string($cell)) {
-            return (string)$cell;
+        $headers = [];
+        foreach ($properties as $property) {
+            $headers[] = $this->formatCSVCell($property);
         }
         
-        // Escape the text delimiter if it appears in the string
-        $cell = str_replace($this->textDelimiter, $this->textDelimiter . $this->textDelimiter, $cell);
-        
-        // Enclose in delimiters if the cell contains separator, newline, or delimiter
-        if (strpos($cell, $this->fieldSeparator) !== false || 
-            strpos($cell, "\n") !== false || 
-            strpos($cell, "\r") !== false || 
-            strpos($cell, $this->textDelimiter) !== false) {
-            return $this->textDelimiter . $cell . $this->textDelimiter;
-        }
-        
-        return $cell;
-    }
-    
-    /**
-     * Extracts raw data from a cursor of models
-     */
-    private function extractModelData(array $models): array
-    {
-        $data = [];
-        foreach ($models as $model) {
-            $data[] = $this->modelToArray($model);
-        }
-        return $data;
-    }
-    
-    /**
-     * Converts a model to an array of values
-     */
-    private function modelToArray(ModelClass $model): array
-    {
-        $array = [];
-        $fields = $this->getModelFields($model);
-        
-        foreach ($fields as $field) {
-            $getter = 'get' . str_replace('_', '', ucwords($field, '_'));
-            if (method_exists($model, $getter)) {
-                $array[$field] = $model->$getter();
-            } else {
-                $array[$field] = $model->{$field} ?? '';
-            }
-        }
-        
-        return $array;
+        $this->csvData[] = implode($this->fieldSeparator, $headers);
     }
 }

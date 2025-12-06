@@ -2,15 +2,14 @@
 
 namespace ERPIA\Lib\Export;
 
-use ERPIA\Core\I18n;
+use ERPIA\Core\Internationalization;
 use ERPIA\Core\CurrencyFormatter;
-use ERPIA\Core\ViewConfig;
 use ERPIA\Models\Asiento;
 use ERPIA\Models\Partida;
-use ERPIA\Models\PageOption;
+use ERPIA\Core\ViewConfigLoader;
 
 /**
- * Class for exporting accounting entries in various formats
+ * Exporter for accounting entries in multiple formats
  */
 class AsientoExport
 {
@@ -26,208 +25,195 @@ class AsientoExport
     /**
      * Export an accounting entry in the specified format
      */
-    public static function export(
-        Asiento $entry, 
-        string $format, 
-        string $title, 
-        int $formatId, 
-        string $languageCode, 
-        &$response
-    ): void {
-        $exportManager = new ExportManager();
-        $exportManager->initializeDocument($format, $title, $formatId, $languageCode);
+    public static function export(Asiento $entry, string $format, string $title, int $formatId, string $languageCode, &$output): void
+    {
+        $exporter = new ExportManager();
+        $exporter->initializeDocument($format, $title, $formatId, $languageCode);
         
-        // Export entry header using view configuration
-        self::exportEntryHeader($entry, $exportManager, $title);
+        // Export entry header information
+        self::exportEntryHeader($entry, $exporter, $title);
         
         // Export entry lines
-        self::processLines($entry, $exportManager);
+        self::processEntryLines($entry, $exporter);
         
         // Export tax data if available
-        self::processTaxData($entry, $exportManager);
+        self::processTaxData($entry, $exporter);
         
         // Export totals
-        self::processTotals($exportManager);
+        self::processTotals($exporter);
         
-        $exportManager->outputDocument($response);
+        $exporter->generateOutput($output);
     }
     
     /**
      * Export the entry header using view configuration
      */
-    private static function exportEntryHeader(Asiento $entry, ExportManager $manager, string $title): void
+    private static function exportEntryHeader(Asiento $entry, ExportManager $exporter, string $title): void
     {
-        // Load view configuration for entry editing
-        $viewConfig = new ViewConfig();
-        $columns = $viewConfig->loadColumnsForView('EditAsiento');
+        $viewConfig = new \stdClass();
+        $columns = [];
+        $modals = [];
+        $rows = [];
         
-        // If no columns loaded, use a default minimal set
-        if (empty($columns)) {
-            $columns = [
-                'code' => ['title' => I18n::trans('code')],
-                'date' => ['title' => I18n::trans('date')],
-                'concept' => ['title' => I18n::trans('concept')]
-            ];
-        }
+        // Load view configuration for accounting entry editing
+        ViewConfigLoader::loadConfiguration('EditAccountingEntry', $viewConfig);
+        ViewConfigLoader::processConfiguration($columns, $modals, $rows, $viewConfig);
         
-        $manager->addModelSection($entry, $columns, $title);
+        $exporter->addModelSection($entry, $columns, $title);
     }
     
     /**
      * Process and export entry lines
      */
-    private static function processLines(Asiento $entry, ExportManager $manager): void
+    private static function processEntryLines(Asiento $entry, ExportManager $exporter): void
     {
-        $lines = $entry->getLines();
-        if (empty($lines)) {
-            return;
-        }
-        
-        $translator = I18n::getInstance();
-        $formatter = CurrencyFormatter::getInstance();
+        $translator = Internationalization::getTranslator();
+        $currency = CurrencyFormatter::getInstance();
         
         $headers = [
-            'subaccount' => $translator->trans('subaccount'),
-            'concept' => $translator->trans('concept'),
-            'debit' => $translator->trans('debit'),
-            'credit' => $translator->trans('credit'),
-            'balance' => $translator->trans('balance'),
-            'counterpart' => $translator->trans('counterpart')
+            $translator->translate('subaccount'),
+            $translator->translate('concept'),
+            $translator->translate('debit'),
+            $translator->translate('credit'),
+            $translator->translate('balance'),
+            $translator->translate('counterpart'),
         ];
         
-        $alignments = [
-            $headers['debit'] => ['align' => 'right', 'css' => 'no-wrap'],
-            $headers['credit'] => ['align' => 'right', 'css' => 'no-wrap'],
-            $headers['balance'] => ['align' => 'right', 'css' => 'no-wrap']
+        $formatting = [
+            $headers[2] => ['alignment' => 'right', 'cssClass' => 'no-wrap'],
+            $headers[3] => ['alignment' => 'right', 'cssClass' => 'no-wrap'],
+            $headers[4] => ['alignment' => 'right', 'cssClass' => 'no-wrap'],
         ];
         
-        // Reset totals
         self::$totalDebit = 0.0;
         self::$totalCredit = 0.0;
         self::$balance = 0.0;
         
-        $tableData = [];
-        foreach ($lines as $line) {
-            self::$balance += $line->debit - $line->credit;
+        $linesData = [];
+        $entryLines = $entry->getLines();
+        
+        foreach ($entryLines as $line) {
+            $debitAmount = $line->getDebit();
+            $creditAmount = $line->getCredit();
+            self::$balance += $debitAmount - $creditAmount;
             
-            $rowData = [
-                $headers['subaccount'] => $line->accountCode,
-                $headers['concept'] => $line->description,
-                $headers['debit'] => $formatter->format($line->debit) . ' ',
-                $headers['credit'] => $formatter->format($line->credit) . ' ',
-                $headers['balance'] => $formatter->format(self::$balance, true) . ' ',
-                $headers['counterpart'] => $line->counterpartCode
+            $linesData[] = [
+                $headers[0] => $line->getSubaccountCode(),
+                $headers[1] => $line->getConcept(),
+                $headers[2] => $currency->format($debitAmount) . ' ',
+                $headers[3] => $currency->format($creditAmount) . ' ',
+                $headers[4] => $currency->format(self::$balance, true) . ' ',
+                $headers[5] => $line->getCounterpartCode(),
             ];
             
-            $tableData[] = $rowData;
-            
-            self::$totalDebit += $line->debit;
-            self::$totalCredit += $line->credit;
+            self::$totalDebit += $debitAmount;
+            self::$totalCredit += $creditAmount;
         }
         
-        $sectionTitle = '<strong>' . $translator->trans('lines') . '</strong>';
-        $manager->addTableSection($headers, $tableData, $alignments, $sectionTitle);
+        $sectionTitle = '<strong>' . $translator->translate('lines') . '</strong>';
+        $exporter->addTableSection($headers, $linesData, $formatting, $sectionTitle);
     }
     
     /**
-     * Process and export tax data if present
+     * Process and export tax-related data
      */
-    private static function processTaxData(Asiento $entry, ExportManager $manager): void
+    private static function processTaxData(Asiento $entry, ExportManager $exporter): void
     {
-        $translator = I18n::getInstance();
-        $formatter = CurrencyFormatter::getInstance();
+        $translator = Internationalization::getTranslator();
+        $currency = CurrencyFormatter::getInstance();
         
         $headers = [
-            'series' => $translator->trans('series'),
-            'invoice' => $translator->trans('invoice'),
-            'vat-document' => $translator->trans('vat-document'),
-            'tax-id' => $translator->trans('tax-id'),
-            'tax-base' => $translator->trans('tax-base'),
-            'vat-rate' => $translator->trans('vat-rate'),
-            'vat-amount' => $translator->trans('vat-amount'),
-            'surcharge-rate' => $translator->trans('surcharge-rate'),
-            'surcharge-amount' => $translator->trans('surcharge-amount')
+            $translator->translate('series'),
+            $translator->translate('invoice'),
+            $translator->translate('vat-document'),
+            $translator->translate('tax-id'),
+            $translator->translate('tax-base'),
+            $translator->translate('vat-percentage'),
+            $translator->translate('vat-amount'),
+            $translator->translate('surcharge-percentage'),
+            $translator->translate('surcharge-amount'),
         ];
         
-        $tableData = [];
-        foreach ($entry->getLines() as $line) {
+        $taxData = [];
+        $entryLines = $entry->getLines();
+        
+        foreach ($entryLines as $line) {
             if (!self::hasTaxRecord($line)) {
                 continue;
             }
             
-            $vatAmount = $line->taxableBase * ($line->vatRate / 100);
-            $surchargeAmount = $line->taxableBase * ($line->surchargeRate / 100);
+            $taxBase = $line->getTaxableBase();
+            $vatAmount = $taxBase * ($line->getVatRate() / 100);
+            $surchargeAmount = $taxBase * ($line->getSurchargeRate() / 100);
             
-            $rowData = [
-                $headers['series'] => $line->seriesCode,
-                $headers['invoice'] => $line->invoiceNumber,
-                $headers['vat-document'] => $line->document,
-                $headers['tax-id'] => $line->taxIdentification,
-                $headers['tax-base'] => $formatter->format($line->taxableBase),
-                $headers['vat-rate'] => $line->vatRate,
-                $headers['vat-amount'] => $formatter->format($vatAmount) . ' ',
-                $headers['surcharge-rate'] => $line->surchargeRate,
-                $headers['surcharge-amount'] => $formatter->format($surchargeAmount) . ' '
+            $taxData[] = [
+                $headers[0] => $line->getSeriesCode(),
+                $headers[1] => $line->getInvoiceNumber(),
+                $headers[2] => $line->getDocumentNumber(),
+                $headers[3] => $line->getTaxId(),
+                $headers[4] => $currency->format($taxBase),
+                $headers[5] => $line->getVatRate(),
+                $headers[6] => $currency->format($vatAmount) . ' ',
+                $headers[7] => $line->getSurchargeRate(),
+                $headers[8] => $currency->format($surchargeAmount) . ' ',
             ];
-            
-            $tableData[] = $rowData;
         }
         
-        if (empty($tableData)) {
+        if (empty($taxData)) {
             return;
         }
         
-        $alignments = [
-            $headers['tax-base'] => ['align' => 'right', 'css' => 'no-wrap'],
-            $headers['vat-rate'] => ['align' => 'center', 'css' => 'no-wrap'],
-            $headers['vat-amount'] => ['align' => 'right', 'css' => 'no-wrap'],
-            $headers['surcharge-rate'] => ['align' => 'center', 'css' => 'no-wrap'],
-            $headers['surcharge-amount'] => ['align' => 'right', 'css' => 'no-wrap']
+        $formatting = [
+            $headers[4] => ['alignment' => 'right', 'cssClass' => 'no-wrap'],
+            $headers[5] => ['alignment' => 'center', 'cssClass' => 'no-wrap'],
+            $headers[6] => ['alignment' => 'right', 'cssClass' => 'no-wrap'],
+            $headers[7] => ['alignment' => 'center', 'cssClass' => 'no-wrap'],
+            $headers[8] => ['alignment' => 'right', 'cssClass' => 'no-wrap'],
         ];
         
-        $sectionTitle = '<strong>' . $translator->trans('vat-register') . '</strong>';
-        $manager->addTableSection($headers, $tableData, $alignments, $sectionTitle);
+        $sectionTitle = '<strong>' . $translator->translate('VAT-register') . '</strong>';
+        $exporter->addTableSection($headers, $taxData, $formatting, $sectionTitle);
     }
     
     /**
      * Process and export totals section
      */
-    private static function processTotals(ExportManager $manager): void
+    private static function processTotals(ExportManager $exporter): void
     {
-        $translator = I18n::getInstance();
-        $formatter = CurrencyFormatter::getInstance();
+        $translator = Internationalization::getTranslator();
+        $currency = CurrencyFormatter::getInstance();
         
         $headers = [
-            'total-debit' => $translator->trans('debit'),
-            'total-credit' => $translator->trans('credit'),
-            'difference' => $translator->trans('difference')
+            $translator->translate('debit'),
+            $translator->translate('credit'),
+            $translator->translate('difference'),
         ];
         
-        $rowData = [
-            $headers['total-debit'] => $formatter->format(self::$totalDebit) . ' ',
-            $headers['total-credit'] => $formatter->format(self::$totalCredit) . ' ',
-            $headers['difference'] => $formatter->format(self::$balance) . ' '
+        $totalsData = [[
+            $headers[0] => $currency->format(self::$totalDebit) . ' ',
+            $headers[1] => $currency->format(self::$totalCredit) . ' ',
+            $headers[2] => $currency->format(self::$balance) . ' '
+        ]];
+        
+        $formatting = [
+            $headers[0] => ['alignment' => 'center'],
+            $headers[1] => ['alignment' => 'center'],
+            $headers[2] => ['alignment' => 'center']
         ];
         
-        $alignments = [
-            $headers['total-debit'] => ['align' => 'center'],
-            $headers['total-credit'] => ['align' => 'center'],
-            $headers['difference'] => ['align' => 'center']
-        ];
-        
-        $sectionTitle = '<strong>' . $translator->trans('totals') . '</strong>';
-        $manager->addTableSection($headers, [$rowData], $alignments, $sectionTitle);
+        $sectionTitle = '<strong>' . $translator->translate('totals') . '</strong>';
+        $exporter->addTableSection($headers, $totalsData, $formatting, $sectionTitle);
     }
     
     /**
-     * Check if a line has tax-related data
+     * Check if a line contains tax-related data
      */
     private static function hasTaxRecord(Partida $line): bool
     {
-        return !empty($line->taxableBase)
-            || !empty($line->vatRate)
-            || !empty($line->surchargeRate)
-            || !empty($line->seriesCode)
-            || !empty($line->invoiceNumber);
+        return !empty($line->getTaxableBase())
+            || !empty($line->getVatRate())
+            || !empty($line->getSurchargeRate())
+            || !empty($line->getSeriesCode())
+            || !empty($line->getInvoiceNumber());
     }
 }

@@ -2,130 +2,122 @@
 
 namespace ERPIA\Lib\Export;
 
-use ERPIA\Core\Logger;
-use ERPIA\Lib\Email\NewMail;
+use ERPIA\Lib\Email\EmailManager;
 use ERPIA\Models\Base\BusinessDocument;
 use ERPIA\Models\Base\ModelClass;
-use ERPIA\Core\Response;
+use ERPIA\Core\FileSystemHelper;
+use ERPIA\Core\Logger;
+use ERPIA\Core\HttpResponse;
 
 /**
- * Export to PDF and prepare for email sending
+ * PDF export for email sending
  */
-class MAILExport extends PDFExport
+class EmailExport extends PDFExportBase
 {
     /** @var array */
-    protected $mailParameters = [];
+    protected $emailParameters = [];
     
     /**
-     * Adds a business document page and captures model info
+     * Export a business document and capture model data for email
      */
-    public function addBusinessDocumentPage($model): bool
+    public function exportBusinessDocument(BusinessDocument $model): bool
     {
-        $this->captureModelInfo($model);
-        return parent::addBusinessDocumentPage($model);
+        $this->captureModelData($model);
+        return parent::exportBusinessDocument($model);
     }
     
     /**
-     * Adds a model page and captures model info
+     * Export a single model and capture model data for email
      */
-    public function addModelPage($model, $columns, $title = ''): bool
+    public function exportSingleModel(ModelClass $model, array $columns, string $title = ''): bool
     {
-        $this->captureModelInfo($model);
-        return parent::addModelPage($model, $columns, $title);
+        $this->captureModelData($model);
+        return parent::exportSingleModel($model, $columns, $title);
     }
     
     /**
-     * Saves PDF to temporary folder and redirects to email sending page
+     * Save PDF to temporary folder and redirect to email sending page
      */
-    public function show(Response &$response)
+    public function sendToResponse(HttpResponse &$response): void
     {
-        $fileName = $this->generateFileName();
-        $filePath = $this->getTempAttachmentPath($fileName);
+        $fileName = $this->generateUniqueFilename();
+        $filePath = $this->getTemporaryFilePath($fileName);
         
-        // Create directory if it doesn't exist
-        $directory = dirname($filePath);
-        if (!$this->createDirectory($directory)) {
-            Logger::error('Unable to create temporary directory for email attachments');
-            return;
-        }
-        
-        // Save PDF to temporary file
         if (!$this->savePdfToFile($filePath)) {
-            Logger::error('Failed to save PDF file for email attachment');
+            Logger::error('Failed to save PDF for email attachment');
             return;
         }
         
-        $this->mailParameters['attachment_file'] = $fileName;
-        
-        // Redirect to email sending page
-        $this->redirectToEmailPage($response);
+        $this->prepareEmailRedirect($response, $fileName);
     }
     
     /**
-     * Captures model class name and primary key value(s)
+     * Capture model information for email parameters
      */
-    protected function captureModelInfo(ModelClass $model): void
+    private function captureModelData(ModelClass $model): void
     {
-        $this->mailParameters['model_class'] = $model->modelClassName();
+        $this->emailParameters['model_class'] = $model->getModelClassName();
         
-        $primaryValue = $model->primaryColumnValue();
+        $primaryKeyValue = $model->getPrimaryKeyValue();
         
-        if (!isset($this->mailParameters['primary_key'])) {
-            $this->mailParameters['primary_key'] = $primaryValue;
-        } elseif (!isset($this->mailParameters['primary_keys'])) {
-            $this->mailParameters['primary_keys'] = $primaryValue;
+        if (!isset($this->emailParameters['primary_key'])) {
+            $this->emailParameters['primary_key'] = $primaryKeyValue;
+        } elseif (!isset($this->emailParameters['primary_keys'])) {
+            $this->emailParameters['primary_keys'] = $primaryKeyValue;
         } else {
-            $this->mailParameters['primary_keys'] .= ',' . $primaryValue;
+            $this->emailParameters['primary_keys'] .= ',' . $primaryKeyValue;
         }
     }
     
     /**
-     * Generates a unique file name for the PDF
+     * Generate unique filename for PDF attachment
      */
-    private function generateFileName(): string
+    private function generateUniqueFilename(): string
     {
-        $baseName = $this->getOutputFileName();
+        $baseName = $this->getOutputFilename();
         $timestamp = time();
         return $baseName . '_email_' . $timestamp . '.pdf';
     }
     
     /**
-     * Gets the full temporary file path for the attachment
+     * Get full temporary file path
      */
-    private function getTempAttachmentPath(string $fileName): string
+    private function getTemporaryFilePath(string $fileName): string
     {
-        return ERPIA_ROOT . '/' . NewMail::ATTACHMENTS_TEMP_PATH . $fileName;
+        $tempDir = ERPIA_ROOT . '/' . EmailManager::ATTACHMENTS_TEMP_PATH;
+        return $tempDir . $fileName;
     }
     
     /**
-     * Creates a directory if it doesn't exist
-     */
-    private function createDirectory(string $path): bool
-    {
-        if (!is_dir($path)) {
-            return mkdir($path, 0755, true);
-        }
-        
-        return is_writable($path);
-    }
-    
-    /**
-     * Saves the PDF document to a file
+     * Save PDF document to file
      */
     private function savePdfToFile(string $filePath): bool
     {
-        $pdfContent = $this->getDocument();
-        return file_put_contents($filePath, $pdfContent) !== false;
+        $tempDir = dirname($filePath);
+        
+        if (!FileSystemHelper::createDirectory($tempDir)) {
+            Logger::error('Cannot create temporary directory for email attachments', [
+                'directory' => $tempDir
+            ]);
+            return false;
+        }
+        
+        $pdfContent = $this->getDocumentContent();
+        $bytesWritten = file_put_contents($filePath, $pdfContent);
+        
+        return $bytesWritten !== false;
     }
     
     /**
-     * Redirects to the email sending page with parameters
+     * Prepare HTTP response for email sending redirect
      */
-    private function redirectToEmailPage(Response &$response): void
+    private function prepareEmailRedirect(HttpResponse $response, string $fileName): void
     {
-        $queryString = http_build_query($this->mailParameters);
-        $redirectUrl = 'SendMail?' . $queryString;
+        $this->emailParameters['file_name'] = $fileName;
         
-        $response->setHeader('Refresh', '0; ' . $redirectUrl);
+        $queryString = http_build_query($this->emailParameters);
+        $redirectUrl = '/email/send?' . $queryString;
+        
+        $response->setRedirect($redirectUrl);
     }
 }

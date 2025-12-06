@@ -2,62 +2,63 @@
 
 namespace ERPIA\Lib\Export;
 
-use ERPIA\Core\DataBase\DataBaseWhere;
+use ERPIA\Core\DatabaseWhere;
 use ERPIA\Models\Base\BusinessDocument;
 use ERPIA\Models\Base\ModelClass;
-use ERPIA\Core\I18n;
-use ERPIA\Core\Response;
+use ERPIA\Core\HttpResponse;
+use ERPIA\Core\Translation;
+use ERPIA\Core\StringHelper;
 
 /**
- * Abstract base class for exporters
+ * Base abstract class for export formats
  */
 abstract class ExportBase
 {
     /** @var string */
-    private $outputFileName;
-    
+    private $outputFilename;
+
     /**
-     * Adds a page with business document data
+     * Export a business document with header and lines combined
      */
-    abstract public function addBusinessDocumentPage($model): bool;
-    
+    abstract public function exportBusinessDocument(BusinessDocument $model): bool;
+
     /**
-     * Adds a page with a list of models
+     * Export a list of models with pagination
      */
-    abstract public function addModelListPage($model, $where, $order, $offset, $columns, $title = ''): bool;
-    
+    abstract public function exportModelList(ModelClass $model, array $where, array $order, int $offset, array $columns, string $title = ''): bool;
+
     /**
-     * Adds a page with a single model
+     * Export a single model instance
      */
-    abstract public function addModelPage($model, $columns, $title = ''): bool;
-    
+    abstract public function exportSingleModel(ModelClass $model, array $columns, string $title = ''): bool;
+
     /**
-     * Adds a page with a table
+     * Export a generic table
      */
-    abstract public function addTablePage($headers, $rows, $options = [], $title = ''): bool;
-    
+    abstract public function exportTable(array $headers, array $rows, array $options = [], string $title = ''): bool;
+
     /**
-     * Gets the complete document
+     * Get the complete document content
      */
-    abstract public function getDocument();
-    
+    abstract public function getDocumentContent();
+
     /**
-     * Initializes a new document
+     * Initialize a new document
      */
-    abstract public function newDocument(string $title, int $formatId, string $languageCode);
-    
+    abstract public function initializeDocument(string $title, int $formatId, string $languageCode): void;
+
     /**
-     * Sets the document orientation
+     * Set page orientation (if applicable)
      */
-    abstract public function setOrientation(string $orientation);
-    
+    abstract public function setPageOrientation(string $orientation): void;
+
     /**
-     * Outputs the document to response
+     * Send document to HTTP response
      */
-    abstract public function show(Response &$response);
-    
+    abstract public function sendToResponse(HttpResponse &$response): void;
+
     /**
-     * Gets alignment settings for columns
+     * Get column alignment mappings from column definitions
      */
     protected function getColumnAlignmentMap(array $columns): array
     {
@@ -68,7 +69,7 @@ abstract class ExportBase
                 $alignments[$column] = 'left';
                 continue;
             }
-            
+
             if (isset($column->columns)) {
                 $nestedAlignments = $this->getColumnAlignmentMap($column->columns);
                 foreach ($nestedAlignments as $key => $alignment) {
@@ -76,29 +77,29 @@ abstract class ExportBase
                 }
                 continue;
             }
-            
-            if (!$this->isColumnHidden($column)) {
-                $alignments[$column->widget->fieldname] = $column->display;
+
+            if (!$column->isHidden()) {
+                $alignments[$column->widget->fieldName] = $column->display;
             }
         }
-        
+
         return $alignments;
     }
-    
+
     /**
-     * Gets title map for columns
+     * Get column title mappings from column definitions
      */
     protected function getColumnTitleMap(array $columns): array
     {
         $titles = [];
-        $translator = I18n::getInstance();
+        $translator = Translation::getInstance();
         
         foreach ($columns as $column) {
             if (is_string($column)) {
                 $titles[$column] = $column;
                 continue;
             }
-            
+
             if (isset($column->columns)) {
                 $nestedTitles = $this->getColumnTitleMap($column->columns);
                 foreach ($nestedTitles as $key => $title) {
@@ -106,17 +107,17 @@ abstract class ExportBase
                 }
                 continue;
             }
-            
-            if (!$this->isColumnHidden($column)) {
-                $titles[$column->widget->fieldname] = $translator->trans($column->title);
+
+            if (!$column->isHidden()) {
+                $titles[$column->widget->fieldName] = $translator->translate($column->title);
             }
         }
-        
+
         return $titles;
     }
-    
+
     /**
-     * Gets widget map for columns
+     * Get column widget mappings from column definitions
      */
     protected function getColumnWidgetMap(array $columns): array
     {
@@ -126,7 +127,7 @@ abstract class ExportBase
             if (is_string($column)) {
                 continue;
             }
-            
+
             if (isset($column->columns)) {
                 $nestedWidgets = $this->getColumnWidgetMap($column->columns);
                 foreach ($nestedWidgets as $key => $widget) {
@@ -134,34 +135,34 @@ abstract class ExportBase
                 }
                 continue;
             }
-            
-            if (!$this->isColumnHidden($column)) {
-                $widgets[$column->widget->fieldname] = $column->widget;
+
+            if (!$column->isHidden()) {
+                $widgets[$column->widget->fieldName] = $column->widget;
             }
         }
-        
+
         return $widgets;
     }
-    
+
     /**
-     * Gets formatted cursor data
+     * Get data from model cursor using column widgets
      */
-    protected function getFormattedCursorData(array $cursor, array $columns): array
+    protected function getModelCursorData(array $cursor, array $columns): array
     {
         $data = [];
         $widgets = $this->getColumnWidgetMap($columns);
         
         foreach ($cursor as $index => $row) {
             foreach ($widgets as $key => $widget) {
-                $data[$index][$key] = $this->getWidgetPlainText($widget, $row);
+                $data[$index][$key] = $widget->getPlainText($row);
             }
         }
-        
+
         return $data;
     }
-    
+
     /**
-     * Gets raw cursor data
+     * Get raw data from model cursor
      */
     protected function getRawCursorData(array $cursor, array $fields = []): array
     {
@@ -169,140 +170,107 @@ abstract class ExportBase
         
         foreach ($cursor as $index => $row) {
             if (empty($fields)) {
-                $fields = array_keys($row->getModelFields());
+                $fields = array_keys($row->getModelProperties());
             }
-            
-            foreach ($fields as $field) {
-                $value = isset($row->{$field}) && $row->{$field} !== null ? $row->{$field} : '';
-                $data[$index][$field] = $value;
+
+            foreach ($fields as $key) {
+                $value = isset($row->{$key}) && $row->{$key} !== null ? $row->{$key} : '';
+                $data[$index][$key] = $value;
             }
         }
-        
+
         return $data;
     }
-    
+
     /**
-     * Gets document format settings
+     * Get document formatting for a business document
      */
-    protected function getDocumentFormatSettings($model)
+    protected function getDocumentFormatting(BusinessDocument $model)
     {
-        $documentFormat = new DocumentFormat();
-        $where = [
-            new DataBaseWhere('autoapply', true),
-            new DataBaseWhere('company_id', $model->company_id)
+        $documentFormat = new \ERPIA\Models\FormatoDocumento();
+        $conditions = [
+            new DatabaseWhere('autoapply', true),
+            new DatabaseWhere('company_id', $model->companyId)
         ];
         
-        $allFormats = $documentFormat->getAll($where, ['document_type' => 'DESC', 'series_code' => 'DESC']);
+        $formats = $documentFormat->getAll($conditions, ['doc_type' => 'DESC', 'series_code' => 'DESC']);
         
-        foreach ($allFormats as $format) {
-            if ($format->document_type === $model->modelClassName() && $format->series_code === $model->series_code) {
+        foreach ($formats as $format) {
+            if ($format->doc_type === $model->getModelClassName() && $format->series_code === $model->seriesCode) {
                 return $format;
-            } elseif ($format->document_type === $model->modelClassName() && $format->series_code === null) {
+            } elseif ($format->doc_type === $model->getModelClassName() && $format->series_code === null) {
                 return $format;
-            } elseif ($format->document_type === null && $format->series_code === $model->series_code) {
+            } elseif ($format->doc_type === null && $format->series_code === $model->seriesCode) {
                 return $format;
-            } elseif ($format->document_type === null && $format->series_code === null) {
+            } elseif ($format->doc_type === null && $format->series_code === null) {
                 return $format;
             }
         }
-        
+
         return $documentFormat;
     }
-    
+
     /**
-     * Gets model column data map
+     * Get model column data for display
      */
-    protected function getModelColumnDataMap($model, array $columns): array
+    protected function getModelColumnData($model, array $columns): array
     {
         $data = [];
-        $translator = I18n::getInstance();
+        $translator = Translation::getInstance();
         
         foreach ($columns as $column) {
             if (is_string($column)) {
                 continue;
             }
-            
+
             if (isset($column->columns)) {
-                $nestedData = $this->getModelColumnDataMap($model, $column->columns);
+                $nestedData = $this->getModelColumnData($model, $column->columns);
                 foreach ($nestedData as $key => $value) {
                     $data[$key] = $value;
                 }
                 continue;
             }
-            
-            if (!$this->isColumnHidden($column)) {
-                $data[$column->widget->fieldname] = [
-                    'title' => $translator->trans($column->title),
-                    'value' => $this->getWidgetPlainText($column->widget, $model)
+
+            if (!$column->isHidden()) {
+                $data[$column->widget->fieldName] = [
+                    'title' => $translator->translate($column->title),
+                    'value' => $column->widget->getPlainText($model)
                 ];
             }
         }
-        
+
         return $data;
     }
-    
+
     /**
-     * Gets model field list
+     * Get model property names
      */
-    protected function getModelFieldList($model): array
+    protected function getModelPropertyNames(ModelClass $model): array
     {
-        $fields = [];
-        
-        foreach (array_keys($model->getModelFields()) as $field) {
-            $fields[$field] = $field;
+        $properties = [];
+        foreach (array_keys($model->getModelProperties()) as $key) {
+            $properties[$key] = $key;
         }
-        
-        return $fields;
+
+        return $properties;
     }
-    
+
     /**
-     * Gets the output file name
+     * Get the output filename
      */
-    protected function getOutputFileName(): string
+    protected function getOutputFilename(): string
     {
-        if (empty($this->outputFileName)) {
-            return 'export_' . mt_rand(1000, 9999);
+        return empty($this->outputFilename) ? 'export_' . mt_rand(1000, 9999) : $this->outputFilename;
+    }
+
+    /**
+     * Set the output filename with sanitization
+     */
+    protected function setOutputFilename(string $name): void
+    {
+        if (empty($this->outputFilename)) {
+            $sanitizedName = StringHelper::sanitizeFilename($name);
+            $this->outputFilename = $sanitizedName;
         }
-        
-        return $this->outputFileName;
-    }
-    
-    /**
-     * Sets the output file name
-     */
-    protected function setOutputFileName(string $name)
-    {
-        if (empty($this->outputFileName)) {
-            $this->outputFileName = $this->sanitizeFileName($name);
-        }
-    }
-    
-    /**
-     * Checks if a column is hidden
-     */
-    private function isColumnHidden($column): bool
-    {
-        return isset($column->hidden) && $column->hidden();
-    }
-    
-    /**
-     * Gets plain text from a widget
-     */
-    private function getWidgetPlainText($widget, $model): string
-    {
-        if (method_exists($widget, 'plainText')) {
-            return $widget->plainText($model);
-        }
-        
-        return '';
-    }
-    
-    /**
-     * Sanitizes a file name
-     */
-    private function sanitizeFileName(string $name): string
-    {
-        $name = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
-        return str_replace([' ', '"', "'", '/', '\\', ','], '_', $name);
     }
 }

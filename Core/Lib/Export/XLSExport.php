@@ -2,261 +2,198 @@
 
 namespace ERPIA\Lib\Export;
 
-use ERPIA\Core\DataBase\DataBaseWhere;
+use ERPIA\Core\DatabaseWhere;
 use ERPIA\Models\Base\BusinessDocument;
 use ERPIA\Models\Base\ModelClass;
-use ERPIA\Core\Response;
-use ERPIA\Core\I18n;
-use ERPIA\Core\Html;
-use XLSXWriter;
+use ERPIA\Core\HttpResponse;
+use ERPIA\Core\StringHelper;
+use ERPIA\Core\Translation;
 
 /**
- * Excel XLSX export data.
+ * Excel export implementation using XLSXWriter
  */
 class XLSExport extends ExportBase
 {
-    const EXPORT_BATCH_SIZE = 5000;
+    const BATCH_LIMIT = 5000;
     
     /** @var int */
     protected $sheetCounter = 0;
     
     /** @var XLSXWriter */
-    protected $excelWriter;
+    protected $xlsxWriter;
     
     /**
-     * Adds a new page with the document data.
+     * Export a business document to Excel with separate sheets for lines and header
      */
-    public function addBusinessDocumentPage($model): bool
+    public function exportBusinessDocument(BusinessDocument $model): bool
     {
-        // Process document lines
-        $lineData = [];
-        $lineHeaders = [];
+        $lineRecords = [];
+        $lineColumnTypes = [];
         
         foreach ($model->getLines() as $line) {
-            if (empty($lineHeaders)) {
-                $lineHeaders = $this->getModelColumnTypes($line);
+            if (empty($lineColumnTypes)) {
+                $lineColumnTypes = $this->getModelColumnTypes($line);
             }
-            $lineData[] = $line;
+            
+            $lineRecords[] = $line;
         }
         
-        $lineRows = $this->getSanitizedCursorData($lineData);
-        $sheetName = I18n::trans('lines');
-        $this->excelWriter->writeSheet($lineRows, $sheetName, $lineHeaders);
+        $lineData = $this->prepareExcelData($lineRecords);
+        $this->xlsxWriter->writeSheet($lineData, Translation::translate('lines'), $lineColumnTypes);
         
-        // Process document header
-        $docHeaders = $this->getModelColumnTypes($model);
-        $docRows = $this->getSanitizedCursorData([$model]);
-        $docSheetName = $model->getPrimaryDescription();
-        $this->excelWriter->writeSheet($docRows, $docSheetName, $docHeaders);
+        $headerColumnTypes = $this->getModelColumnTypes($model);
+        $headerData = $this->prepareExcelData([$model]);
+        $this->xlsxWriter->writeSheet($headerData, $model->getPrimaryDescription(), $headerColumnTypes);
         
         return false;
     }
     
     /**
-     * Adds a new page with a table listing all models data.
+     * Export a list of models to Excel with pagination
      */
-    public function addModelListPage($model, $where, $order, $offset, $columns, $title = ''): bool
+    public function exportModelList(ModelClass $model, array $conditions, array $orderBy, 
+                                   int $startOffset, array $columns, string $title = ''): bool
     {
-        $this->setOutputFileName($title);
+        $this->setOutputFilename($title);
+        $sheetName = empty($title) ? 'sheet' . $this->sheetCounter : StringHelper::createSlug($title);
         
-        $sheetName = $this->generateSheetName($title);
-        $headers = $this->getModelColumnTypes($model);
+        $columnTypes = $this->getModelColumnTypes($model);
+        $records = $model->getAll($conditions, $orderBy, $startOffset, self::BATCH_LIMIT);
         
-        $records = $model->getAll($where, $order, $offset, self::EXPORT_BATCH_SIZE);
         if (empty($records)) {
-            $this->excelWriter->writeSheet([], $sheetName, $headers);
+            $this->xlsxWriter->writeSheet([], $sheetName, $columnTypes);
             return true;
         }
         
-        // Write header once
-        $this->excelWriter->writeSheetHeader($sheetName, $headers);
+        $this->xlsxWriter->writeSheetHeader($sheetName, $columnTypes);
         
-        // Write rows in batches
         while (!empty($records)) {
-            $rows = $this->getSanitizedCursorData($records);
-            foreach ($rows as $row) {
-                $this->excelWriter->writeSheetRow($sheetName, $row);
+            $dataRows = $this->prepareExcelData($records);
+            foreach ($dataRows as $row) {
+                $this->xlsxWriter->writeSheetRow($sheetName, $row);
             }
             
-            $offset += self::EXPORT_BATCH_SIZE;
-            $records = $model->getAll($where, $order, $offset, self::EXPORT_BATCH_SIZE);
+            $startOffset += self::BATCH_LIMIT;
+            $records = $model->getAll($conditions, $orderBy, $startOffset, self::BATCH_LIMIT);
         }
         
         return true;
     }
     
     /**
-     * Adds a new page with the model data.
+     * Export a single model to Excel
      */
-    public function addModelPage($model, $columns, $title = ''): bool
+    public function exportSingleModel(ModelClass $model, array $columns, string $title = ''): bool
     {
-        $headers = $this->getModelColumnTypes($model);
-        $rows = $this->getSanitizedCursorData([$model]);
-        $this->excelWriter->writeSheet($rows, $title, $headers);
+        $columnTypes = $this->getModelColumnTypes($model);
+        $dataRows = $this->prepareExcelData([$model]);
+        $this->xlsxWriter->writeSheet($dataRows, $title, $columnTypes);
         return true;
     }
     
     /**
-     * Adds a new page with the table.
+     * Export a generic table to Excel
      */
-    public function addTablePage($headers, $rows, $options = [], $title = ''): bool
+    public function exportTable(array $headers, array $rows, array $options = [], string $title = ''): bool
     {
         $this->sheetCounter++;
         $sheetName = 'sheet' . $this->sheetCounter;
         
-        $headerTypes = [];
-        foreach ($headers as $header) {
-            $headerTypes[$header] = 'string';
-        }
-        
-        $this->excelWriter->writeSheetRow($sheetName, $headers);
+        $this->xlsxWriter->writeSheetRow($sheetName, $headers);
         foreach ($rows as $row) {
-            $this->excelWriter->writeSheetRow($sheetName, $row);
+            $this->xlsxWriter->writeSheetRow($sheetName, $row);
         }
         
         return true;
     }
     
     /**
-     * Returns the full document.
+     * Get the complete Excel document content
      */
-    public function getDocument()
+    public function getDocumentContent(): string
     {
-        return $this->excelWriter->writeToString();
+        return (string)$this->xlsxWriter->writeToString();
     }
     
     /**
-     * Initializes a new document.
+     * Initialize a new Excel document
      */
-    public function newDocument(string $title, int $formatId, string $languageCode)
+    public function initializeDocument(string $title, int $formatId, string $languageCode): void
     {
-        $this->setOutputFileName($title);
+        $this->setOutputFilename($title);
         
-        $this->excelWriter = new XLSXWriter();
-        $this->excelWriter->setAuthor('ERPIA');
-        $this->excelWriter->setTitle($title);
+        $this->xlsxWriter = new XLSXWriter();
+        $this->xlsxWriter->setAuthor('ERPIA System');
+        $this->xlsxWriter->setTitle($title);
     }
     
     /**
-     * Sets the document orientation (not applicable for Excel).
+     * Set page orientation (not applicable for Excel)
      */
-    public function setOrientation(string $orientation)
+    public function setPageOrientation(string $orientation): void
     {
-        // Not applicable for Excel
+        // Not implemented for Excel export
     }
     
     /**
-     * Sets headers and outputs document content to response.
+     * Send Excel document to HTTP response
      */
-    public function show(Response &$response)
+    public function sendToResponse(HttpResponse &$response): void
     {
         $response->setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        $response->setHeader('Content-Disposition', 'attachment; filename=' . $this->getOutputFileName() . '.xlsx');
-        $response->setContent($this->getDocument());
+        $response->setHeader('Content-Disposition', 'attachment; filename=' . $this->getOutputFilename() . '.xlsx');
+        $response->setContent($this->getDocumentContent());
     }
     
     /**
-     * Gets column type mapping for Excel.
+     * Get Excel column type definitions for a model
      */
-    protected function getColumnTypeMap(array $columns): array
+    protected function getModelColumnTypes(ModelClass $model): array
     {
-        $types = [];
-        $columnTitles = $this->getColumnTitleMap($columns);
+        $columnTypes = [];
+        $modelProperties = $model->getModelProperties();
         
-        foreach ($columnTitles as $col) {
-            $types[$col] = 'string';
-        }
-        
-        return $types;
-    }
-    
-    /**
-     * Gets model column types for Excel.
-     */
-    protected function getModelColumnTypes($model): array
-    {
-        $types = [];
-        $modelFields = $model->getModelFields();
-        
-        foreach ($this->getModelFieldList($model) as $key) {
-            $fieldType = $modelFields[$key]['type'] ?? 'string';
+        foreach ($this->getModelPropertyNames($model) as $key) {
+            if (!isset($modelProperties[$key])) {
+                $columnTypes[$key] = 'string';
+                continue;
+            }
+            
+            $fieldType = $modelProperties[$key]['type'] ?? 'string';
             
             switch ($fieldType) {
                 case 'int':
                 case 'integer':
-                    $types[$key] = 'integer';
+                    $columnTypes[$key] = 'integer';
                     break;
                     
                 case 'double':
                 case 'float':
                 case 'decimal':
-                    $types[$key] = 'price';
+                    $columnTypes[$key] = 'price';
                     break;
                     
                 default:
-                    $types[$key] = 'string';
+                    $columnTypes[$key] = 'string';
             }
         }
         
-        return $types;
+        return $columnTypes;
     }
     
     /**
-     * Gets sanitized cursor data with HTML cleanup.
+     * Prepare data for Excel export with sanitization
      */
-    protected function getSanitizedCursorData(array $cursor, array $fields = []): array
+    protected function prepareExcelData(array $cursor, array $fields = []): array
     {
-        $data = parent::getRawCursorData($cursor, $fields);
+        $data = $this->getRawCursorData($cursor, $fields);
         
         foreach ($data as $index => $row) {
             foreach ($row as $key => $value) {
-                $data[$index][$key] = $this->sanitizeCellValue($value);
+                $data[$index][$key] = StringHelper::sanitizeForExcel($value);
             }
         }
         
         return $data;
-    }
-    
-    /**
-     * Generates a safe sheet name from title.
-     */
-    private function generateSheetName(string $title): string
-    {
-        if (empty($title)) {
-            $this->sheetCounter++;
-            return 'sheet' . $this->sheetCounter;
-        }
-        
-        return $this->createSlug($title);
-    }
-    
-    /**
-     * Creates a URL-safe slug from a string.
-     */
-    private function createSlug(string $text): string
-    {
-        $slug = preg_replace('/[^a-zA-Z0-9\s]/', '', $text);
-        $slug = strtolower(trim($slug));
-        $slug = preg_replace('/\s+/', '_', $slug);
-        
-        // Limit length for Excel sheet name (31 characters max)
-        if (strlen($slug) > 31) {
-            $slug = substr($slug, 0, 28) . '...';
-        }
-        
-        return $slug;
-    }
-    
-    /**
-     * Sanitizes a cell value for Excel.
-     */
-    private function sanitizeCellValue($value): string
-    {
-        if (is_null($value)) {
-            return '';
-        }
-        
-        $stringValue = (string)$value;
-        return Html::escape($stringValue);
     }
 }
